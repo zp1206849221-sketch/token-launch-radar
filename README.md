@@ -4,7 +4,7 @@
 [![rank](https://make.fun/badge/token-radar-01/zp1206849221-sketch/token-launch-radar/rank.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-launch-radar)
 [![reward](https://make.fun/badge/token-radar-01/zp1206849221-sketch/token-launch-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-launch-radar)
 
-This entry ranks 178 pre-token protocols from the sealed DefiLlama snapshot by their implied launch value, estimated with a fitted peer-multiple valuation model: a log-log size curve blended with shrunk category multiples, adjusted by momentum and track-record factors. Every ranked protocol comes with a concrete farm plan for positioning ahead of a potential token launch. The results are presented in a hand-written static dashboard with a sortable board, per-protocol detail views, and filters.
+This entry ranks 178 pre-token protocols from the sealed DefiLlama snapshot by their implied launch value, estimated with a fitted peer-multiple valuation model: a global log-log size curve blended with shrunk category multiples and — for categories with at least 8 tokenised peers — the category's own shrunk log-log regression, adjusted by momentum and track-record factors. Every row carries a confidence score (peer count, fit quality, TVL distance) and the full model breakdown, plus a protocol-specific farm plan with an itemised cost table, a weekly upkeep load and risk notes, for positioning ahead of a potential token launch. The results are presented in a hand-written static dashboard with a sortable board (including sort by confidence), per-protocol detail views with a value waterfall and plan timeline, and filters.
 
 ## How it works
 

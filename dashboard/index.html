@@ -19,8 +19,9 @@
     <h2>How the value model works</h2>
     <ol>
       <li><strong>Peer multiples by category.</strong> Every protocol that already trades is grouped by category; its median market-cap-to-TVL multiple, shrunk toward the global median, prices a pre-token protocol of the same kind.</li>
-      <li><strong>A size curve from the fit.</strong> A log-log regression of market cap on TVL over all tokenised peers gives a second, size-only estimate; the implied value blends the two 50/50.</li>
+      <li><strong>Size curves, global and per category.</strong> A log-log regression of market cap on TVL over all tokenised peers gives a size-only estimate; categories with 8+ peers also get their own regression, shrunk toward the global line. The implied value blends the estimates 50/50, or 40/30/30 when a category curve exists.</li>
       <li><strong>Momentum and track record.</strong> Seven-day TVL growth moves the estimate by up to ±25%, and each year a protocol has run with no token adds 6%, capped at four years.</li>
+      <li><strong>A confidence score on every row.</strong> Peer count, fit quality and the distance of a protocol's TVL from its category peers combine into a 0–1 score with a High / Medium / Low tier, so thin-evidence estimates are labelled as such.</li>
     </ol>
   </section>
 </header>
@@ -46,6 +47,7 @@
           <option value="implied">Implied value</option>
           <option value="tvl">TVL</option>
           <option value="change">7d change</option>
+          <option value="confidence">Confidence</option>
           <option value="age">Age</option>
         </select>
       </label>
@@ -60,6 +62,7 @@
             <th class="num">Implied value</th>
             <th class="num">TVL</th>
             <th class="num">Mult</th>
+            <th class="num">Conf</th>
             <th class="num">7d</th>
             <th class="num">Age</th>
             <th>Chains</th>
@@ -78,7 +81,7 @@
 </main>
 
 <footer class="site-foot">
-  <p><strong>Methodology.</strong> The radar reads one sealed DefiLlama snapshot and fits its model on the snapshot's own tokenised protocols: an ordinary-least-squares line in log10 space (log10 market cap against log10 TVL) and, per category, the median market-cap-to-TVL multiple shrunk toward the global median with weight n/(n+6). A pre-token protocol's base value is the geometric blend of the size curve and its category multiple applied to its own TVL; seven-day TVL momentum then scales it by 1 + 0.01 &times; the change clamped to &plusmn;25%, and its track record scales it by 1 + 6% per year tracked, capped at four years, with protocols younger than a quarter year discounted 10% instead. The stated range is the estimate times 10<sup>&plusmn;0.45</sup>. The board covers the snapshot's full 40-protocol watchlist and fills the remaining rows with the largest pre-token protocols below the $50M floor that pass the watchlist's own hygiene: no bridge, liquid-staking, restaking or exchange categories, no wrapped or staked products, no versioned pool names, no exchange-named products. Farm plans are generated per category from each protocol's cheapest chain and TVL tier; costs are estimates in US dollars.</p>
+  <p><strong>Methodology.</strong> The radar reads one sealed DefiLlama snapshot and fits its model on the snapshot's own tokenised protocols: an ordinary-least-squares line in log10 space (log10 market cap against log10 TVL), per category the median market-cap-to-TVL multiple shrunk toward the global median with weight n/(n+6), and — for categories with at least 8 tokenised peers — the category's own log-log line shrunk toward the global line with weight n/(n+8). A pre-token protocol's base value blends the size curve and its category multiple 50/50 in log space, or 40/30/30 with the category curve when one exists; seven-day TVL momentum then scales it by 1 + 0.01 &times; the change clamped to &plusmn;25%, and its track record scales it by 1 + 6% per year tracked, capped at four years, with protocols younger than a quarter year discounted 10% instead. The stated range is the estimate times 10<sup>&plusmn;0.45</sup>. Each row's confidence score combines its category's peer count (40%), the R<sup>2</sup> of the curve that priced it (35%) and the log-distance of its TVL from its category peers' median TVL (25%); tiers are High at 0.55+, Medium at 0.38+, Low below. The board covers the snapshot's full 40-protocol watchlist and fills the remaining rows with the largest pre-token protocols below the $50M floor that pass the watchlist's own hygiene: no bridge, liquid-staking, restaking or exchange categories, no wrapped or staked products, no versioned pool names, no exchange-named products. Farm plans are generated per protocol from its own chain list ordered by gas cost, its category's product mechanics and its TVL tier; costs are estimates in US dollars. The snapshot records a 7-day TVL change only, so no 30-day change is shown.</p>
   <p class="foot-line">Data: DefiLlama snapshot, as of 2026-11-14 &middot; Implied values are this radar's own model estimates, not predictions that a token will launch.</p>
 </footer>
 
