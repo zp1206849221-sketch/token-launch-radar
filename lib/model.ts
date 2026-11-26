@@ -1,9 +1,12 @@
 // lib/model.ts — the token launch radar's model, written for this entry.
 //
 // One sealed DefiLlama snapshot in, one ranked board out. The board covers the snapshot's whole
-// watchlist (pre-token protocols at or above the $50M TVL floor) and fills the rest of its 200
-// rows with pre-token protocols below the floor that pass the same hygiene the watchlist rule
-// uses, so the radar also surfaces early protocols before they reach the floor.
+// watchlist (pre-token protocols at or above the $50M TVL floor); above the floor it also
+// admits, one by one, the pre-token protocols the watchlist left out that a documented
+// blind-spot review (below) finds are not products of a token that already trades; and it
+// fills the rest of its 200 rows with pre-token protocols below the floor that pass the
+// same hygiene the watchlist rule uses, so the radar also surfaces early protocols before
+// they reach the floor. On this snapshot those sets hold 40, 15 and 138 protocols: 193 rows.
 //
 // The value model is fitted on the snapshot's own tokenised peers (protocols that already record
 // a market cap), never on a hardcoded list of names:
@@ -15,9 +18,10 @@
 //   4. the base log-value blends the estimates: 50/50 size curve and category multiple, or
 //      40/30/30 when a category curve exists for the protocol's category;
 //   5. momentum (7-day TVL change) and track record (age since first tracked) adjust it.
-// Every row also carries a confidence score built from the category's peer count, the fit
-// quality of the curve that priced it, and how far its TVL sits from its category peers'.
-// Every figure the dashboard shows is recomputed from the snapshot by this file.
+// Every row also carries a confidence score built from the category's peer support, the
+// fit quality of the curve that priced it, and whether its size sits inside the range
+// that curve was fitted on. Every figure the dashboard shows is recomputed from the
+// snapshot by this file.
 
 /** One protocol record: exactly the ten fields the sealed snapshot carries. */
 export interface Protocol {
@@ -67,6 +71,10 @@ export interface Fit {
   globalMultiple: number;
   /** Median log10 TVL over all tokenised peers, the confidence distance anchor. */
   peerMedianLogTvl: number;
+  /** 5th and 95th percentiles of log10 TVL over all tokenised peers: the range the
+   * global model was fitted on, the confidence support range for thin categories. */
+  peerP05LogTvl: number;
+  peerP95LogTvl: number;
   categoryMultiples: Map<string, { n: number; multiple: number }>;
   /** Own log-log fits, only for categories with at least 8 tokenised peers. */
   categoryFits: Map<string, CategoryFit>;
@@ -207,6 +215,15 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
+/** The q-quantile of a non-empty list of numbers, linearly interpolated. */
+function quantile(values: number[], q: number): number {
+  const sorted = [...values].sort((x, y) => x - y);
+  const at = (sorted.length - 1) * q;
+  const lo = Math.floor(at);
+  const hi = Math.ceil(at);
+  return lo === hi ? sorted[lo]! : sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (at - lo);
+}
+
 /** Whole days from `listedAt` to `asOf`, both YYYY-MM-DD read as UTC; null when unusable. */
 function ageInDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
@@ -293,7 +310,10 @@ export function fitPeers(snapshot: Snapshot): Fit {
     peers.map((p) => Math.log10(p.mcap_usd!)),
   );
   const globalMultiple = median(peers.map((p) => p.mcap_usd! / p.tvl_usd));
-  const peerMedianLogTvl = median(peers.map((p) => Math.log10(p.tvl_usd)));
+  const peerLogTvls = peers.map((p) => Math.log10(p.tvl_usd));
+  const peerMedianLogTvl = median(peerLogTvls);
+  const peerP05LogTvl = quantile(peerLogTvls, 0.05);
+  const peerP95LogTvl = quantile(peerLogTvls, 0.95);
   const byCategory = new Map<string, Protocol[]>();
   for (const p of peers) {
     const key = p.category ?? '';
@@ -333,6 +353,8 @@ export function fitPeers(snapshot: Snapshot): Fit {
     r2: global.r2,
     globalMultiple,
     peerMedianLogTvl,
+    peerP05LogTvl,
+    peerP95LogTvl,
     categoryMultiples,
     categoryFits,
     categoryPeerStats,
@@ -357,10 +379,49 @@ function passesHygiene(p: Protocol): boolean {
   return true;
 }
 
-/** Confidence tier label for a 0..1 confidence score. */
+/**
+ * The blind-spot review: every protocol at or above the floor that records no token and
+ * passes the field hygiene above, yet is not on the watchlist. The watchlist rule kept
+ * these off for one reason the snapshot cannot show — DefiLlama's parentProtocol record,
+ * which is not one of the snapshot's ten fields — so each one was adjudicated by hand
+ * from the fields the snapshot does carry (name, category, chains, and what sibling
+ * records of the same brand show). The rule the review applies: a candidate stays off
+ * the board only when the snapshot itself shows it is a token that already trades in
+ * another form — the record is a minted token product, a wrapper of a trading token, a
+ * bridge product of a token issuer, or a product line of a brand whose token the
+ * snapshot records on a sibling record. Everything else is a pre-token protocol the
+ * list simply left out, and the rules call the watchlist a floor, never a ceiling.
+ * The verdicts and their reasons stay in the code so the call for each name is auditable.
+ */
+export const BLIND_SPOT_REVIEW: { slug: string; verdict: 'include' | 'exclude'; reason: string }[] = [
+  { slug: 'sentora-curator', verdict: 'include', reason: 'No other record carries the Sentora brand and nothing in the snapshot ties it to a tokenised parent; a curator platform in its own right.' },
+  { slug: 'polymarket-international', verdict: 'include', reason: 'The brand\u2019s only record in the snapshot and no Polymarket record carries a token; a prediction market is a protocol in its own right, not a wrapped or staked form of one.' },
+  { slug: 'cian-yield-layer', verdict: 'include', reason: 'The only CIAN record; the brand records no token anywhere in the snapshot and the protocol is a standalone aggregator.' },
+  { slug: 'defi-saver-asset-management', verdict: 'include', reason: 'DeFi Saver\u2019s only record and the brand records no token; an automation layer over CDP positions, not a wrapped or staked product of a tokenised protocol.' },
+  { slug: 'mellow-core', verdict: 'include', reason: 'Mellow\u2019s other record (mellow-restaking) records no token either; Core is the brand\u2019s main vault system, not a product of a tokenised parent.' },
+  { slug: 'bitfi-basis', verdict: 'include', reason: 'BitFi\u2019s only record; basis trading is the protocol\u2019s own product and the brand records no token.' },
+  { slug: 'figure-markets-prime', verdict: 'include', reason: 'Figure Markets records no token in the snapshot; Prime is its lending market, not a wrapped or staked product.' },
+  { slug: 'figure-markets-exchange', verdict: 'include', reason: 'Figure Markets records no token in the snapshot; the exchange is a spot venue in its own right, not a wrapped or staked product.' },
+  { slug: 'extended-perps', verdict: 'include', reason: 'A standalone perpetuals venue; the brand\u2019s only record and it records no token.' },
+  { slug: 'stellar-defi-hub', verdict: 'include', reason: 'A standalone hub on Stellar; the brand\u2019s only record and it records no token.' },
+  { slug: 'loopscale-lending', verdict: 'include', reason: 'A standalone lending protocol; the brand\u2019s only record and it records no token.' },
+  { slug: 'ipor-fusion', verdict: 'include', reason: 'No record in the snapshot carries an IPOR token (symbol and gecko_id checked across all 758 protocols); Fusion is the brand\u2019s allocator and records no token itself.' },
+  { slug: 'arcus-perps', verdict: 'include', reason: 'A standalone perpetuals venue; the brand\u2019s only record and it records no token.' },
+  { slug: 'azverse-perps', verdict: 'include', reason: 'A standalone perpetuals venue; the brand\u2019s only record and it records no token.' },
+  { slug: 'nado-spot', verdict: 'include', reason: 'Nado\u2019s only record; the brand records no token and the spot book is the exchange itself, not a wrapped or staked form.' },
+  { slug: 'theo-network-thusd', verdict: 'exclude', reason: 'The record is itself a minted token product: its name is the token (thUSD, a tokenised dollar; its sibling thBill follows the same pattern). No launch is pending for a token that is the product.' },
+  { slug: 'avant-avusd', verdict: 'exclude', reason: 'The record is itself the minted avUSD stablecoin (its sibling avETH follows the same pattern): the token is the product, not a launch still to come.' },
+  { slug: 'usdcx', verdict: 'exclude', reason: 'Its category is Stablecoin Wrapper: a wrapped form of USDC, a token that already trades.' },
+  { slug: 'solv-strategies', verdict: 'exclude', reason: 'Sibling records of the same brand (SolvBTC, Solv Basis Trading, Solv RWA) carry the SOLV symbol in the snapshot: the parent brand\u2019s token already trades and Strategies is its product line.' },
+  { slug: 'circle-gateway', verdict: 'exclude', reason: 'A Cross Chain Bridge product of Circle, the USDC issuer: transfer plumbing for a token that already trades, in the bridge family the hygiene treats as bridged products, not an independent pre-token protocol.' },
+];
+
+/** Confidence tier label for a 0..1 confidence score, recalibrated with the v3 formula:
+ * High marks rows with strong local evidence, Low the rows resting on the global model
+ * alone. */
 function confidenceTier(confidence: number): 'High' | 'Medium' | 'Low' {
-  if (confidence >= 0.55) return 'High';
-  if (confidence >= 0.38) return 'Medium';
+  if (confidence >= 0.58) return 'High';
+  if (confidence >= 0.47) return 'Medium';
   return 'Low';
 }
 
@@ -384,15 +445,32 @@ function score(p: Protocol, snapshot: Snapshot, fit: Fit, watchlist: boolean): S
   let ageFactor = 1;
   if (ageYears !== null) ageFactor = ageYears < 0.25 ? 0.9 : 1 + 0.06 * Math.min(ageYears, 4);
   const implied = Math.max(1, Math.round(10 ** baseLog * momentumFactor * ageFactor));
-  // Confidence: how much evidence backs this row's estimate. Peer support counts the
-  // category's tokenised peers; fit quality is the R2 of the curve that priced the row
-  // (the category fit when there is one, else the global fit); distance measures how far
-  // the row's TVL sits from its category peers' median TVL, in log10 space.
+  // Confidence: how much evidence backs this row's estimate, recalibrated in v3 so the
+  // score measures support rather than size. Peer support counts the category's
+  // tokenised peers on a log scale, with a small constant credit for the global evidence
+  // the shrinkage lends every category, so a one-peer category is thin but not
+  // evidenceless. Fit quality is the R2 of the curve that priced the row (the category
+  // fit when there is one, else the global fit). The distance term asks whether the
+  // row's size sits inside the range the pricing model was fitted on: for categories
+  // with at least 8 tokenised peers that is the distance from the category's own median
+  // log TVL; for thinner categories the pricing itself falls back on the global model,
+  // so the support range is the global peers' [p05, p95] log-TVL range, widened by half
+  // a log. The v2 calibration anchored distance on the category median even for a
+  // one-peer category, which made the board's largest protocols — by construction its
+  // top ranks — carry the lowest confidence on the board.
   const stats = fit.categoryPeerStats.get(key);
-  const peerScore = stats === undefined ? 0.1 : clamp(stats.n / 12, 0.15, 1);
+  const peerCount = stats === undefined ? 0 : stats.n;
+  const peerScore = clamp(Math.log(1 + peerCount + 2) / Math.log(27), 0.1, 1);
   const fitScore = clamp(catFit === undefined ? fit.r2 : catFit.r2, 0, 1);
-  const anchor = stats === undefined ? fit.peerMedianLogTvl : stats.medianLogTvl;
-  const distanceScore = clamp(1 - Math.abs(logTvl - anchor) / 1.5, 0, 1);
+  let distanceScore: number;
+  if (stats !== undefined && stats.n >= 8) {
+    distanceScore = clamp(1 - Math.abs(logTvl - stats.medianLogTvl) / 2, 0, 1);
+  } else {
+    const lo = fit.peerP05LogTvl - 0.5;
+    const hi = fit.peerP95LogTvl + 0.5;
+    const excess = logTvl < lo ? lo - logTvl : logTvl > hi ? logTvl - hi : 0;
+    distanceScore = clamp(1 - excess / 0.75, 0, 1);
+  }
   const confidence = roundTo(0.4 * peerScore + 0.35 * fitScore + 0.25 * distanceScore, 3);
   const breakdown: ModelBreakdown = {
     size_curve_usd: Math.round(10 ** sizeLog),
@@ -432,6 +510,16 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
   for (const slug of snapshot.watchlist) {
     const p = bySlugMap.get(slug);
     if (p !== undefined) chosen.push(score(p, snapshot, fit, true));
+  }
+  // Above-floor protocols the watchlist left out, admitted one by one by the blind-spot
+  // review above: each is re-checked against the snapshot here (it must record no token
+  // and sit at or above the floor) before it is scored like any other candidate.
+  for (const entry of BLIND_SPOT_REVIEW) {
+    if (entry.verdict !== 'include') continue;
+    const p = bySlugMap.get(entry.slug);
+    if (p === undefined || watchlistSet.has(p.slug)) continue;
+    if (p.gecko_id !== null || p.symbol !== null || p.tvl_usd < snapshot.floor_usd) continue;
+    chosen.push(score(p, snapshot, fit, false));
   }
   const belowFloor = snapshot.protocols
     .filter((p) => !watchlistSet.has(p.slug) && p.gecko_id === null && p.symbol === null && p.tvl_usd < snapshot.floor_usd && passesHygiene(p))
@@ -592,6 +680,22 @@ const CATEGORY_RISKS: Record<string, string> = {
   'Basis Trading': 'Funding risk: if funding rates flip sign for a sustained stretch, the basis position pays instead of earns and returns compress fast.',
   CDP: 'Liquidation risk: if collateral falls toward the mint ratio, the position can be liquidated at a penalty; keep the ratio well above the minimum.',
   Restaking: 'Slashing and lockup risk: restaked assets can be slashed for operator faults and withdrawals can queue for weeks.',
+  Derivatives:
+    'Leverage risk: a perpetual position can be liquidated if the mark price moves against it and margin runs thin, and funding payments can turn a quiet position into a slow bleed.',
+  'Yield Aggregator':
+    'Routing risk: an aggregator moves deposits between underlying strategies, so the wallet inherits the risk of venues it never chose directly; a failed underlying strategy hits every vault routed into it.',
+  'Prediction Market':
+    'Resolution risk: prediction shares settle on an outcome call that can be disputed or delayed, and a losing market pays out nothing at all.',
+  'Leveraged Farming':
+    'Leverage risk: the borrowed leg means a sharp move in the farmed pair can liquidate the whole position, equity included; the headline APY assumes the borrow stays cheap.',
+  'CDP Manager':
+    'Automation risk: a manager acts on the position without asking first; a mis-set trigger can sell collateral at the worst moment, and the underlying vault can still be liquidated if the ratio falls faster than the automation reacts.',
+  'OTC Marketplace':
+    'Counterparty risk: an OTC trade settles against another party, not a pool; until the escrow releases, the funds depend on the counterparty and the marketplace\u2019s process.',
+  Insurance:
+    'Cover risk: an insurance position pays only if the claim is accepted under its wording; discretionary cover can be declined, and the premium is spent either way.',
+  'Uncollateralized Lending':
+    'Credit risk: uncollateralised loans can simply not be repaid; there is no collateral to liquidate, so a default is a direct loss to the pool\u2019s lenders.',
 };
 
 /** Risk notes for one protocol: its category's failure mode plus what its own figures say. */
@@ -683,7 +787,7 @@ const CATEGORY_ACTIONS: Record<string, { core: (f: PlanFigures, name: string) =>
   },
   'Basis Trading': {
     core: (f, name) => `Fund ${name}'s basis vault on ${f.chain} with at least ${usd(f.capital)} of USDC and hold the position through at least one full funding cycle. One deposit at about ${f.gasText} of gas, done in about 10 minutes.`,
-    second: (f, name) => `Add a second tranche, about a quarter of the first, after the first funding cycle settles, so the wallet shows it stayed for the yield rather than the snapshot. Budget about ${f.gasText} of gas and 10 minutes.`,
+    second: (f, name) => `Add a second tranche to ${name}, about a quarter of the first, after the first funding cycle settles, so the wallet shows it stayed for the yield rather than the snapshot. Budget about ${f.gasText} of gas and 10 minutes.`,
   },
   CDP: {
     core: (f, name) => `Open a collateralised position in ${name} on ${f.chain}: deposit at least ${usd(f.capital)} of collateral, mint a conservative amount of its stablecoin against it (keep the collateral ratio above 200%), and hold both. Two transactions at about ${f.gasText} of gas each, about 20 minutes in all.`,
@@ -692,6 +796,98 @@ const CATEGORY_ACTIONS: Record<string, { core: (f: PlanFigures, name: string) =>
   Restaking: {
     core: (f, name) => `Restake at least ${usd(f.capital)} worth of ETH or an ETH liquid staking token through ${name} on ${f.chain} and hold the restaked position; do not withdraw inside the first month. One deposit at about ${f.gasText} of gas, done in about 15 minutes.`,
     second: (f, name) => `Delegate or allocate a second, smaller restake, about a quarter of the first, to a different operator or strategy in ${name} if it offers one. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  Derivatives: {
+    core: (f, name) => `Open a small perpetual position in ${name} on ${f.chain}: post at least ${usd(f.capital)} of margin, take a modest long or short at low leverage (2x or less) and close it after a few days, so the wallet shows real trading rather than a single deposit. Opening and closing cost about ${f.gasText} of gas each; the opening takes about 20 minutes.`,
+    second: (f, name) => `Trade a second contract on ${name} a few days later at about a quarter of the first position's margin, ideally on the other side of the book, so the wallet reads as an active trader rather than a one-off visitor. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Yield Aggregator': {
+    core: (f, name) => `Deposit at least ${usd(f.capital)} into ${name}'s main aggregation vault on ${f.chain} and hold the shares; before depositing, note from its own dashboard which underlying strategies the vault routes into. One deposit at about ${f.gasText} of gas, done in about 10 minutes.`,
+    second: (f, name) => `Open a second deposit in a different ${name} vault, about a quarter of the first, whose underlying strategies differ from the first vault's, so the wallet is not exposed to a single route. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  Chain: {
+    core: (f, name) => `Become a genuine user of ${name}: bridge at least ${usd(f.capital)} onto the chain and use its native applications — a swap, a lending market, a name service if it has one — from the same wallet over several days. Bridge and transaction costs run about ${f.gasText} each; the first session takes about 20 minutes.`,
+    second: (f, name) => `Return to ${name} a week later and repeat one of the same actions at about a quarter of the size, so the wallet shows continuing activity on the chain rather than a single bridge-in. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Staking Pool': {
+    core: (f, name) => `Stake at least ${usd(f.capital)} with ${name} on ${f.chain} through its pool and hold the staking receipt in the same wallet; note the pool's commission and unbonding period before staking. One transaction at about ${f.gasText} of gas, done in about 10 minutes.`,
+    second: (f, name) => `Add a second, smaller stake with ${name}, about a quarter of the first, after the first rewards cycle lands, so the wallet's staking history spans more than one epoch. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Liquidity Manager': {
+    core: (f, name) => `Deposit at least ${usd(f.capital)} into a managed liquidity position in ${name} on ${f.chain}, choosing the pair you understand best, and leave the manager's range settings at their defaults for the first cycle. One deposit at about ${f.gasText} of gas, done in about 15 minutes.`,
+    second: (f, name) => `Open a second managed position with ${name} in a different pair, about a quarter of the first, so the wallet is not riding on a single pool's volume. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Prediction Market': {
+    core: (f, name) => `Trade on ${name} on ${f.chain}: buy at least ${usd(f.capital)} of shares across two or three markets you can actually follow, and hold at least one position to resolution. Each trade costs about ${f.gasText} of gas; the first session takes about 20 minutes.`,
+    second: (f, name) => `Take the other side of one of your earlier ${name} markets, or a position in a different category of market, at about a quarter of the size, so the wallet shows judgement rather than a single bet. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  CeDeFi: {
+    core: (f, name) => `Deposit at least ${usd(f.capital)} into ${name}'s main earn product on ${f.chain} and hold it for the full first term it offers; read its custody and withdrawal terms before depositing, since the yield is managed off-chain. One deposit at about ${f.gasText} of gas, done in about 10 minutes.`,
+    second: (f, name) => `Add a second, smaller deposit, about a quarter of the first, in a different term or product ${name} offers, so the wallet is not locked into a single maturity. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  Farm: {
+    core: (f, name) => `Farm ${name} on ${f.chain} the way its own interface directs: deposit at least ${usd(f.capital)} into its main farm or hub pool and keep the position staked rather than harvesting daily. One or two transactions at about ${f.gasText} of gas each, about 15 minutes in all.`,
+    second: (f, name) => `Stake a second, smaller amount, about a quarter of the first, into another ${name} pool a few days later, so the wallet is spread across more than one farm. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Leveraged Farming': {
+    core: (f, name) => `Open a leveraged farm in ${name} on ${f.chain} at the lowest leverage it offers (2x or less): supply at least ${usd(f.capital)} as the equity leg and let the protocol borrow the rest into its farm pair. Two transactions at about ${f.gasText} of gas each, about 20 minutes in all.`,
+    second: (f, name) => `Open a second, smaller leveraged position in ${name}, about a quarter of the first, in a different pair after the first has run a full week, so the wallet shows it managed the first position before adding risk. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Anchor BTC': {
+    core: (f, name) => `Supply at least ${usd(f.capital)} of BTC-backed collateral through ${name} on ${f.chain} and use its anchor product the way a holder would — borrow or mint against it conservatively, or hold the anchored position — rather than passing through once. Two transactions at about ${f.gasText} of gas each, about 20 minutes in all.`,
+    second: (f, name) => `Repeat the ${name} action at about a quarter of the size after the first position has settled through one full cycle, so the wallet shows it stayed. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Decentralized BTC': {
+    core: (f, name) => `Bring at least ${usd(f.capital)} of bitcoin exposure on-chain through ${name} on ${f.chain} and hold or deploy the decentralised BTC it issues; keep the mint or wrap receipt in the same wallet. One or two transactions at about ${f.gasText} of gas each, about 15 minutes in all.`,
+    second: (f, name) => `Use a small part of the BTC issued through ${name} in a second venue it names — a lending market or a pool — at about a quarter of the first amount, so the wallet shows the asset in use, not just minted. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Dual-Token Stablecoin': {
+    core: (f, name) => `Use ${name}'s two-token system on ${f.chain} directly: mint or buy at least ${usd(f.capital)} of its stablecoin against its collateral token, and hold both sides of the pair in the same wallet so the wallet shows the full mechanism. Two transactions at about ${f.gasText} of gas each, about 15 minutes in all.`,
+    second: (f, name) => `Provide a small amount of liquidity, about a quarter of the first position, to the stablecoin's main pool in ${name}'s ecosystem, so the wallet also earns from the system it holds. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Collateral Markets': {
+    core: (f, name) => `Post at least ${usd(f.capital)} of collateral into ${name} on ${f.chain} and take the position its market is built around — a small mint or borrow against the collateral — keeping the ratio conservative. Two transactions at about ${f.gasText} of gas each, about 20 minutes in all.`,
+    second: (f, name) => `Adjust the ${name} position once — a small top-up or a partial repay — a week later, so the wallet shows active collateral management rather than a set-and-forget deposit. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'CDP Manager': {
+    core: (f, name) => `Manage a real position through ${name} on ${f.chain}: open or take over a collateralised debt position with at least ${usd(f.capital)} of collateral, set its automation (stop-loss or auto-repay) the way the product intends, and keep the ratio above 200%. Setup takes about 25 minutes; transactions cost about ${f.gasText} of gas each.`,
+    second: (f, name) => `Let ${name}'s automation act at least once — a rebalance, a boost or a protection trigger — before adjusting anything by hand, then review what it did and log it. Budget about ${f.gasText} of gas and 10 minutes for the review.`,
+  },
+  Payments: {
+    core: (f, name) => `Use ${name} as a payment rail on ${f.chain}: send at least ${usd(f.capital)} in total through it in a few real payments over two weeks — to your own second wallet or a merchant it lists — rather than one round trip. Each payment costs about ${f.gasText} of gas and a few minutes.`,
+    second: (f, name) => `Receive a payment back through ${name}, or pay a different counterparty, at about a quarter of the first amount, so the wallet shows two-way use of the rail. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Stablecoin Wrapper': {
+    core: (f, name) => `Wrap at least ${usd(f.capital)} of the underlying stablecoin through ${name} on ${f.chain} and hold the wrapped form; then use a small part of it where ${name} says it is accepted, so the wallet shows the wrapper in use. Two transactions at about ${f.gasText} of gas each, about 10 minutes in all.`,
+    second: (f, name) => `Unwrap a small part of the ${name} position, about a quarter, after two weeks and re-wrap it, so the wallet's history shows the full round trip a real holder makes. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'OTC Marketplace': {
+    core: (f, name) => `Trade through ${name}'s marketplace on ${f.chain}: complete at least ${usd(f.capital)} of volume in one or two genuine orders, using its escrow or settlement flow exactly as offered rather than a side channel. The first trade, including any onboarding, takes about 25 minutes; settlement costs about ${f.gasText} of gas.`,
+    second: (f, name) => `Complete a second, smaller trade, about a quarter of the first, on the other side of the market if ${name} allows it, so the wallet shows both buying and selling. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Governance Incentives': {
+    core: (f, name) => `Take part in ${name}'s incentive programme on ${f.chain} with at least ${usd(f.capital)} in the position it rewards, and vote or claim through its governance flow at least once rather than only holding the position. Two transactions at about ${f.gasText} of gas each, about 15 minutes in all.`,
+    second: (f, name) => `Claim the first incentive the ${name} position earns and restake or reuse it inside the same programme, at whatever size it lands, so the wallet shows the full earn-and-claim loop. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  Insurance: {
+    core: (f, name) => `Buy cover through ${name} on ${f.chain} for a position you actually hold elsewhere: at least ${usd(f.capital)} of cover value for one full term, chosen against a named protocol risk. The purchase costs about ${f.gasText} of gas and takes about 15 minutes including reading the cover wording.`,
+    second: (f, name) => `Renew or extend the ${name} cover once, or cover a second smaller position at about a quarter of the first cover's value, so the wallet shows continuing rather than one-off protection. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Crypto Card Issuer': {
+    core: (f, name) => `Use ${name}'s card product the way a holder would: complete its onboarding, load at least ${usd(f.capital)} onto the card balance through ${f.chain}, and make several ordinary purchases over two weeks rather than one test transaction. Onboarding takes about 20 minutes; loads cost about ${f.gasText} of gas.`,
+    second: (f, name) => `Top the ${name} card up a second time, about a quarter of the first load, after the first balance is spent down, so the wallet shows a reload cycle. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Uncollateralized Lending': {
+    core: (f, name) => `Lend at least ${usd(f.capital)} into ${name}'s credit pool on ${f.chain} for one full loan cycle, after reading which borrowers the pool serves and what its repayment record shows. One deposit at about ${f.gasText} of gas, done in about 15 minutes including the reading.`,
+    second: (f, name) => `Roll the first cycle's proceeds into a second ${name} pool or a second cycle at about a quarter of the size, so the wallet shows it stayed after seeing a full repayment round. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  Indexes: {
+    core: (f, name) => `Buy at least ${usd(f.capital)} of ${name}'s index product on ${f.chain} and hold it through at least one rebalance, noting the basket's constituents before buying. One purchase at about ${f.gasText} of gas, done in about 10 minutes.`,
+    second: (f, name) => `Add a second purchase of ${name}, about a quarter of the first, after the first rebalance you observe, so the wallet's timing follows the index's own schedule. Budget about ${f.gasText} of gas and 10 minutes.`,
+  },
+  'Interest Rate Derivatives': {
+    core: (f, name) => `Take a small position in ${name}'s rate market on ${f.chain}: fix or float at least ${usd(f.capital)} of notional at the longest tenor you can follow, and hold it for at least two weeks. The opening costs about ${f.gasText} of gas and takes about 20 minutes including reading the market's terms.`,
+    second: (f, name) => `Open the opposite side in ${name}, or a shorter tenor, at about a quarter of the first notional after the first position has run a week, so the wallet shows it is managing rate exposure rather than guessing once. Budget about ${f.gasText} of gas and 10 minutes.`,
   },
 };
 
@@ -712,7 +908,74 @@ const UPKEEP_FOCUS: Record<string, string> = {
   'Basis Trading': 'check the funding rate sign and the vault\u2019s margin headroom',
   CDP: 'check the collateral ratio and top up if it drifts toward 200%',
   Restaking: 'check operator status and any slashing or withdrawal-queue news',
+  Derivatives: 'check the margin ratio and funding payments, and top up margin before it drifts toward the liquidation band',
+  'Yield Aggregator': 'check which strategies the vault is routed into and whether any underlying venue changed',
+  Chain: 'check bridged balances and whether any native application changed its fees or closed deposits',
+  'Staking Pool': 'check validator or pool performance and any change to commission or unbonding terms',
+  'Liquidity Manager': 'check whether the manager rebalanced the range and what fees the position actually earned',
+  'Prediction Market': 'check open positions for early resolution, market closure or disputed outcomes',
+  CeDeFi: 'check withdrawal windows and any change to the product\u2019s stated terms or custody arrangement',
+  Farm: 'check the farm\u2019s reward rate and whether the pool is being wound down or replaced',
+  'Leveraged Farming': 'check the position\u2019s health and debt ratio, and deleverage before it nears the liquidation threshold',
+  'Anchor BTC': 'check the backing reports and any change to mint and redemption fees',
+  'Decentralized BTC': 'check the peg and reserve reports and any change to mint and redemption fees',
+  'Dual-Token Stablecoin': 'check the stablecoin\u2019s peg and the collateral token\u2019s price trend, since the pair moves together',
+  'Collateral Markets': 'check the collateral ratio and any change to the market\u2019s accepted collateral list',
+  'CDP Manager': 'check the managed position\u2019s ratio and whether its automation triggers fired or were changed',
+  Payments: 'check settlement times and any change to the rail\u2019s fees or supported assets',
+  'Stablecoin Wrapper': 'check that the wrapped form still redeems one-for-one and whether its accepted venues changed',
+  'OTC Marketplace': 'check open orders and escrow balances, and any change to the marketplace\u2019s settlement terms',
+  'Governance Incentives': 'check the programme\u2019s remaining budget and whether its rewarded actions changed',
+  Insurance: 'check the cover\u2019s remaining term and whether its exclusions or claims process changed',
+  'Crypto Card Issuer': 'check card fees, load limits and any change to the issuer\u2019s terms',
+  'Uncollateralized Lending': 'check the pool\u2019s repayment news and any late or defaulted loans in it',
+  Indexes: 'check the basket after each rebalance for constituents added or dropped',
+  'Interest Rate Derivatives': 'check the position\u2019s mark against the current rate curve and its margin headroom',
 };
+
+/** Which watch brief a category gets in step 5: what an early user of that kind of
+ * protocol actually watches for. Categories not listed get the general brief. */
+const WATCH_GROUPS: Record<string, 'markets' | 'curators' | 'vaults' | 'credit'> = {
+  Derivatives: 'markets',
+  Dexs: 'markets',
+  'Interest Rate Derivatives': 'markets',
+  'Prediction Market': 'markets',
+  'Risk Curators': 'curators',
+  'Onchain Capital Allocator': 'curators',
+  Yield: 'vaults',
+  'Yield Aggregator': 'vaults',
+  'Staking Pool': 'vaults',
+  'Liquidity Manager': 'vaults',
+  'Leveraged Farming': 'vaults',
+  CeDeFi: 'vaults',
+  'Dual-Token Stablecoin': 'vaults',
+  Indexes: 'vaults',
+  Lending: 'credit',
+  CDP: 'credit',
+  'CDP Manager': 'credit',
+  'Uncollateralized Lending': 'credit',
+  'Collateral Markets': 'credit',
+  'Basis Trading': 'credit',
+};
+
+/** Step 5 of the plan: the watch brief, worded for the kind of protocol this row is,
+ * followed by the 7-day move sentence and the log-keeping sentence. */
+function watchStep(p: Protocol, move: string): string {
+  const group = (p.category !== null ? WATCH_GROUPS[p.category] : undefined) ?? 'general';
+  const log = 'Keep the dated transaction log current; it is the evidence of genuine early use if a snapshot or claim is ever announced.';
+  switch (group) {
+    case 'markets':
+      return `Watch ${p.name}'s markets for the remaining weeks: track its volume, open interest and any new market listings or season announcements each week. ${move} Log every trade with its date and transaction hashes; a dated trading history is the evidence of genuine early use if a snapshot or claim is ever announced.`;
+    case 'curators':
+      return `Watch how ${p.name} allocates for the remaining weeks: read each rebalance or vault update it publishes and re-check its allocations on this radar weekly. ${move} ${log}`;
+    case 'vaults':
+      return `Watch ${p.name}'s vaults for the remaining weeks: follow its strategy and share-price reporting and re-check the position on this radar weekly. ${move} ${log}`;
+    case 'credit':
+      return `Watch ${p.name}'s credit conditions for the remaining weeks: follow its governance and parameter changes (caps, rates, collateral lists) and re-check the position on this radar weekly. ${move} ${log}`;
+    default:
+      return `Watch ${p.name} for the remaining weeks: follow its official announcements and re-check it on this radar weekly. ${move} ${log}`;
+  }
+}
 
 /** Six concrete steps for one row: setup, core action, second presence, upkeep, watch, exit. */
 function farmSteps(row: Scored): string[] {
@@ -735,8 +998,8 @@ function farmSteps(row: Scored): string[] {
     actions.core(f, p.name),
     secondStep,
     `Maintain the ${p.name} position weekly for the full ${f.weeks}-week plan: one visit a week of about ${f.weeklyMinutes} minutes to ${focus}, and log every visit with its date and transaction hashes. Upkeep gas runs about ${f.gasText} per visit on ${f.chain}.`,
-    `Watch ${p.name} for the remaining weeks: follow its official announcements and re-check it on this radar weekly. ${move} Keep the dated transaction log current; it is the evidence of genuine early use if a snapshot or claim is ever announced.`,
-    `Close out ready: over the ${f.weeks}-week horizon the plan costs about ${usd(f.totalCost)} in gas and fees (setup ${usd(f.costs[0]!.usd)}, upkeep ${usd(f.costs[1]!.usd)}), on top of the ${usd(f.capital)} of working capital that stays in the position. Main risk — ${(f.risks[1] ?? f.risks[0]!).replace(/\.$/, '')}. Be ready to claim and stake any token it issues, and unwind in an orderly way if it announces there will be none.`,
+    watchStep(p, move),
+    `Close out the ${p.name} position ready: over the ${f.weeks}-week horizon the plan costs about ${usd(f.totalCost)} in gas and fees (setup ${usd(f.costs[0]!.usd)}, upkeep ${usd(f.costs[1]!.usd)}), on top of the ${usd(f.capital)} of working capital that stays in the position. Main risk — ${(f.risks[1] ?? f.risks[0]!).replace(/\.$/, '')}. Be ready to claim and stake any token it issues, and unwind in an orderly way if it announces there will be none.`,
   ];
 }
 

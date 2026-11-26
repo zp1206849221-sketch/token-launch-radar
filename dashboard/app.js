@@ -186,7 +186,7 @@
       '<dt>First tracked</dt><dd>' + esc(r.listedAt || 'not recorded') + '</dd>' +
       '<dt>Age</dt><dd>' + age(r.ageYears) + '</dd>' +
       '<dt>Chains</dt><dd>' + esc(r.chains.join(', ') || '—') + '</dd>' +
-      '<dt>Watchlist</dt><dd>' + (r.watchlist ? 'yes — at/above the $50M floor' : 'no — below-floor find') + '</dd>' +
+      '<dt>Watchlist</dt><dd>' + (r.watchlist ? 'yes — at/above the $50M floor' : (r.tvl >= 50000000 ? 'no — above-floor protocol admitted by the blind-spot review' : 'no — below-floor find')) + '</dd>' +
       '</dl></div>' +
       '<div class="card"><h3>Model breakdown — how the value is built</h3><ul class="breakdown">' +
       '<li><span class="k">TVL (snapshot)</span><span class="v">' + money(r.tvl) + '</span></li>' +
@@ -204,7 +204,7 @@
       '" style="width:' + Math.round(b.confidence * 100) + '%"></div></div>' +
       '<p class="conf-note">From ' + (catPeers[r.category || 'Uncategorised'] || 0) + ' tokenised ' +
       esc(r.category || 'category') + ' peers, a pricing-curve R\u00b2 of ' + fitR2Used.toFixed(2) +
-      ', and how far this TVL sits from the category peers\u2019 median.</p></div></div>' +
+      ', and whether this TVL sits inside the size range that curve was fitted on.</p></div></div>' +
       '<div class="card"><h3>Why this rank</h3><p class="why">' + esc(whyLine(r)) + '</p></div>' +
       '<div class="card"><h3>Plan summary &amp; costs</h3><div class="summary-box">' +
       '<span class="k">Est. total cost</span><span class="v">' + money(r.farmSummary.total_cost_usd) + '</span>' +
